@@ -33,6 +33,9 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Re-enqueue: if a worker's session crashes mid-flow, the in-progress flow is returned to the
  * queue and another worker will pick it up (as long as enough healthy devices remain).
+ *
+ * Driver restart: a crashed worker reopens its session with a reinstalled driver up to
+ * [maxDriverRestarts] times before its device is counted as unhealthy.
  */
 class DynamicShardScheduler(
     private val plan: ExecutionPlan,
@@ -49,6 +52,7 @@ class DynamicShardScheduler(
     private val reinstallDriver: Boolean,
     private val reporter: TestSuiteReporter,
     private val captureSteps: Boolean,
+    private val maxDriverRestarts: Int = DEFAULT_MAX_DRIVER_RESTARTS,
 ) {
 
     private val logger = LoggerFactory.getLogger(DynamicShardScheduler::class.java)
@@ -67,46 +71,56 @@ class DynamicShardScheduler(
             async(Dispatchers.IO + CoroutineName("worker-$workerIndex")) {
                 if (cancelled.get()) return@async
 
-                val driverHostPort = selectPort()
                 try {
-                    MaestroSessionManager.newSession(
-                        host = host,
-                        port = port,
-                        teamId = teamId,
-                        driverHostPort = driverHostPort,
-                        deviceId = deviceId,
-                        platform = platform,
-                        isHeadless = isHeadless,
-                        screenSize = screenSize,
-                        reinstallDriver = reinstallDriver,
-                        executionPlan = plan,
-                    ) { session ->
-                        val interactor = TestSuiteInteractor(
-                            maestro = session.maestro,
-                            device = session.device,
-                            shardIndex = workerIndex,
-                            reporter = reporter,
-                            captureSteps = captureSteps,
-                        )
-                        val summary = runBlocking {
-                            interactor.runFromQueue(
-                                flowQueue = flowQueue,
-                                pending = pending,
-                                cancelled = cancelled,
-                                onDeviceCrash = { crashedFlow ->
-                                    // Return the flow to the queue for another worker to pick up.
-                                    flowQueue.trySend(crashedFlow)
-                                    decrementAndCheckAlive(workerIndex, deviceId, aliveWorkers, cancelled, cancellationReason)
-                                },
-                                env = env,
-                                debugOutputPath = debugOutputPath,
-                                deviceId = deviceId,
+                    val outcome = runWithDriverRestarts(
+                        maxRestarts = maxDriverRestarts,
+                        shouldContinue = { pending.get() > 0 && !cancelled.get() },
+                        onRestart = { attempt ->
+                            logger.warn("[worker-$workerIndex] Restarting Maestro driver on $deviceId (attempt $attempt of $maxDriverRestarts)")
+                        },
+                    ) { isRestart ->
+                        var crashed = false
+                        MaestroSessionManager.newSession(
+                            host = host,
+                            port = port,
+                            teamId = teamId,
+                            driverHostPort = selectPort(),
+                            deviceId = deviceId,
+                            platform = platform,
+                            isHeadless = isHeadless,
+                            screenSize = screenSize,
+                            reinstallDriver = reinstallDriver || isRestart,
+                            executionPlan = plan,
+                        ) { session ->
+                            val interactor = TestSuiteInteractor(
+                                maestro = session.maestro,
+                                device = session.device,
+                                shardIndex = workerIndex,
+                                reporter = reporter,
+                                captureSteps = captureSteps,
                             )
+                            val summary = runBlocking {
+                                interactor.runFromQueue(
+                                    flowQueue = flowQueue,
+                                    pending = pending,
+                                    cancelled = cancelled,
+                                    onDeviceCrash = { crashedFlow ->
+                                        flowQueue.trySend(crashedFlow)
+                                        crashed = true
+                                    },
+                                    env = env,
+                                    debugOutputPath = debugOutputPath,
+                                    deviceId = deviceId,
+                                )
+                            }
+                            summaries.add(summary)
                         }
-                        summaries.add(summary)
+                        if (crashed) WorkerOutcome.CRASHED else WorkerOutcome.FINISHED
+                    }
+                    if (outcome == WorkerOutcome.CRASHED) {
+                        decrementAndCheckAlive(workerIndex, deviceId, aliveWorkers, cancelled, cancellationReason)
                     }
                 } catch (e: Exception) {
-                    // Session failed to open (device unreachable at startup).
                     logger.error("[worker-$workerIndex] Session for device $deviceId failed: ${e.message}")
                     decrementAndCheckAlive(workerIndex, deviceId, aliveWorkers, cancelled, cancellationReason)
                 }
@@ -137,4 +151,26 @@ class DynamicShardScheduler(
     }
 
     private fun selectPort(): Int = ServerSocket(0).use { it.localPort }
+
+    companion object {
+        const val DEFAULT_MAX_DRIVER_RESTARTS = 2
+    }
+}
+
+internal enum class WorkerOutcome { FINISHED, CRASHED }
+
+internal fun runWithDriverRestarts(
+    maxRestarts: Int,
+    shouldContinue: () -> Boolean,
+    onRestart: (attempt: Int) -> Unit,
+    runSession: (isRestart: Boolean) -> WorkerOutcome,
+): WorkerOutcome {
+    var outcome = runSession(false)
+    var restarts = 0
+    while (outcome == WorkerOutcome.CRASHED && restarts < maxRestarts && shouldContinue()) {
+        restarts++
+        onRestart(restarts)
+        outcome = runSession(true)
+    }
+    return if (outcome == WorkerOutcome.CRASHED && !shouldContinue()) WorkerOutcome.FINISHED else outcome
 }

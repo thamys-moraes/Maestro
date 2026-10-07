@@ -137,6 +137,14 @@ class TestCommand : Callable<Int> {
     )
     private var minHealthyDevices: Int = 2
 
+    @Option(
+        names = ["--max-driver-restarts"],
+        description = ["Times --shard-split-dynamic restarts the Maestro driver on a device whose driver died " +
+            "before giving up on that device. (default: \${DEFAULT-VALUE})"],
+        defaultValue = "2",
+    )
+    private var maxDriverRestarts: Int = DynamicShardScheduler.DEFAULT_MAX_DRIVER_RESTARTS
+
 
     @Option(names = ["-c", "--continuous"])
     private var continuous: Boolean = false
@@ -438,7 +446,7 @@ class TestCommand : Callable<Int> {
             val flowCount = plan.flowsToRun.size
             PrintUtils.info(
                 "Will dynamically distribute $flowCount flows across $workers devices " +
-                    "(shared queue, min-healthy: $minHealthyDevices)"
+                    "(shared queue, min-healthy: $minHealthyDevices, max-driver-restarts: $maxDriverRestarts)"
             )
 
             if (flowCount > 5) showCloudFasterResultsPromotionMessageIfNeeded()
@@ -447,6 +455,7 @@ class TestCommand : Callable<Int> {
                 plan = plan,
                 deviceIds = deviceIds.take(workers),
                 minHealthyDevices = minHealthyDevices,
+                maxDriverRestarts = maxDriverRestarts,
                 env = env,
                 debugOutputPath = debugOutputPath,
                 host = parent?.host,
