@@ -8,6 +8,12 @@
 - Add `--min-healthy-devices` to set a minimum threshold of healthy devices; aborts the run if too many devices crash to prevent a single surviving device from running the full queue
 - Automatically stop the app after each flow to free device memory, preventing slowdown in long test suites
 
+
+## 2.11.1
+
+- Dynamic sharding: before restarting a crashed Maestro driver on Android, wait until the device reports `sys.boot_completed=1` (up to 3 minutes), so restart attempts are not spent while the emulator is still rebooting
+- Dynamic sharding: each worker prints `[shard N] Device: <device>` when its session opens, so the device that ran each flow can be traced from the CLI output
+- Dynamic sharding: restart the Maestro driver up to `--max-driver-restarts` times (default 2) when the device server dies, instead of dropping the device for the rest of the run
 ## 2.11.0
 
 - Android: support Android 17 (API 37) in `start-device`, resolving the new minor-versioned 16 KB page-size system images and naming the exact `--device-os` to use when the derived image isn't installed

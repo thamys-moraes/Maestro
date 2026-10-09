@@ -76,4 +76,43 @@ class DriverRestartTest {
         assertThat(error).hasMessageThat().isEqualTo("device offline")
         assertThat(calls).isEqualTo(2)
     }
+
+    @Test
+    fun `boot wait returns as soon as android reports boot completed`() {
+        var clock = 0L
+        val probes = mutableListOf(false, false, true)
+        val ready = waitForAndroidBoot(
+            timeoutMillis = 60_000,
+            pollMillis = 5_000,
+            isBooted = { probes.removeAt(0) },
+            sleep = { clock += it },
+            now = { clock },
+        )
+
+        assertThat(ready).isTrue()
+        assertThat(clock).isEqualTo(10_000)
+    }
+
+    @Test
+    fun `boot wait gives up at the timeout and treats probe errors as not booted`() {
+        var clock = 0L
+        val ready = waitForAndroidBoot(
+            timeoutMillis = 15_000,
+            pollMillis = 5_000,
+            isBooted = { throw IllegalStateException("device offline") },
+            sleep = { clock += it },
+            now = { clock },
+        )
+
+        assertThat(ready).isFalse()
+        assertThat(clock).isEqualTo(15_000)
+    }
+
+    @Test
+    fun `only android serials wait for boot`() {
+        assertThat(isAndroidSerial("emulator-5556")).isTrue()
+        assertThat(isAndroidSerial("192.168.0.10:5555")).isTrue()
+        assertThat(isAndroidSerial("R58M123ABC")).isTrue()
+        assertThat(isAndroidSerial("8A1F2C3D-1234-4E5F-9ABC-0123456789AB")).isFalse()
+    }
 }
