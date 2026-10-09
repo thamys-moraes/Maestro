@@ -3,14 +3,14 @@
 # Drop-in replacement for the official https://get.maestro.mobile.dev installer.
 #
 # Usage:
-#   curl -Ls https://raw.githubusercontent.com/thamys-moraes/Maestro/v2.11.0-dynamic/install-dynamic.sh | bash
+#   curl -Ls https://raw.githubusercontent.com/thamys-moraes/Maestro/v2.11.1-dynamic/install-dynamic.sh | bash
 
 set -e
 
-RELEASE_URL="https://github.com/thamys-moraes/Maestro/releases/download/v2.11.0-dynamic/maestro-dynamic-macos.zip"
+RELEASE_URL="https://github.com/thamys-moraes/Maestro/releases/download/v2.11.1-dynamic/maestro-dynamic-macos.zip"
 INSTALL_DIR="$HOME/.maestro"
 
-echo "Installing Maestro fork (v2.11.0-dynamic)..."
+echo "Installing Maestro fork (v2.11.1-dynamic)..."
 
 # Remove previous installation and ensure target directory exists
 rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/lib"

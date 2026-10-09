@@ -12,6 +12,7 @@ import maestro.cli.model.TestExecutionSummary
 import maestro.cli.report.ReportFormat
 import maestro.cli.report.TestSuiteReporter
 import maestro.cli.session.MaestroSessionManager
+import maestro.cli.util.PrintUtils
 import maestro.orchestra.workspace.WorkspaceExecutionPlanner.ExecutionPlan
 import org.slf4j.LoggerFactory
 import java.net.ServerSocket
@@ -53,6 +54,7 @@ class DynamicShardScheduler(
     private val reporter: TestSuiteReporter,
     private val captureSteps: Boolean,
     private val maxDriverRestarts: Int = DEFAULT_MAX_DRIVER_RESTARTS,
+    private val bootWaitMillis: Long = DEFAULT_BOOT_WAIT_MILLIS,
 ) {
 
     private val logger = LoggerFactory.getLogger(DynamicShardScheduler::class.java)
@@ -77,6 +79,14 @@ class DynamicShardScheduler(
                         shouldContinue = { pending.get() > 0 && !cancelled.get() },
                         onRestart = { attempt ->
                             logger.warn("[worker-$workerIndex] Restarting Maestro driver on $deviceId (attempt $attempt of $maxDriverRestarts)")
+                            if (isAndroidSerial(deviceId)) {
+                                val ready = waitForAndroidBoot(
+                                    timeoutMillis = bootWaitMillis,
+                                    pollMillis = BOOT_POLL_MILLIS,
+                                    isBooted = { adbBootCompleted(deviceId) },
+                                )
+                                logger.warn("[worker-$workerIndex] Android on $deviceId ${if (ready) "booted" else "still not booted after ${bootWaitMillis / 1000}s"} before driver restart")
+                            }
                         },
                     ) { isRestart ->
                         var crashed = false
@@ -92,6 +102,7 @@ class DynamicShardScheduler(
                             reinstallDriver = reinstallDriver || isRestart,
                             executionPlan = plan,
                         ) { session ->
+                            PrintUtils.message("[shard ${workerIndex + 1}] Device: ${session.device?.description ?: deviceId}")
                             val interactor = TestSuiteInteractor(
                                 maestro = session.maestro,
                                 device = session.device,
@@ -154,6 +165,8 @@ class DynamicShardScheduler(
 
     companion object {
         const val DEFAULT_MAX_DRIVER_RESTARTS = 2
+        const val DEFAULT_BOOT_WAIT_MILLIS = 180_000L
+        private const val BOOT_POLL_MILLIS = 5_000L
     }
 }
 
@@ -173,4 +186,33 @@ internal fun runWithDriverRestarts(
         outcome = runSession(true)
     }
     return if (outcome == WorkerOutcome.CRASHED && !shouldContinue()) WorkerOutcome.FINISHED else outcome
+}
+
+internal fun isAndroidSerial(deviceId: String): Boolean =
+    deviceId.startsWith("emulator-") || deviceId.contains(":") || !deviceId.contains("-")
+
+internal fun waitForAndroidBoot(
+    timeoutMillis: Long,
+    pollMillis: Long,
+    isBooted: () -> Boolean,
+    sleep: (Long) -> Unit = { Thread.sleep(it) },
+    now: () -> Long = { System.currentTimeMillis() },
+): Boolean {
+    val deadline = now() + timeoutMillis
+    while (true) {
+        if (runCatching(isBooted).getOrDefault(false)) return true
+        if (now() >= deadline) return false
+        sleep(pollMillis)
+    }
+}
+
+private fun adbBootCompleted(deviceId: String): Boolean {
+    val process = ProcessBuilder("adb", "-s", deviceId, "shell", "getprop", "sys.boot_completed")
+        .redirectErrorStream(true)
+        .start()
+    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+        process.destroyForcibly()
+        return false
+    }
+    return process.inputStream.bufferedReader().readText().trim() == "1"
 }
